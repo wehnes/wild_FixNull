@@ -107,13 +107,23 @@ pub(crate) async fn get_chapter_content(aid: &str, cid: &str) -> anyhow::Result<
             let novel_dir = Path::new(DOWNLOAD_FOLDER.get().unwrap()).join(&a.aid);
             let chapter_file_path = novel_dir.join(format!("chapter_{}", cid));
             let content = tokio::fs::read_to_string(chapter_file_path).await?;
-            return Ok(content);
+            let trimmed = content.trim();
+            if !trimmed.is_empty()
+                && trimmed != "0"
+                && !trimmed.eq_ignore_ascii_case("null")
+            {
+                return Ok(content);
+            }
         }
     }
 
     // 先尝试从缓存获取（跳过无效的缓存内容）
     if let Some(cache) = chapter_cache::Entity::get_chapter_content(aid, cid).await? {
-        if !cache.content.trim().is_empty() && cache.content.trim() != "0" {
+        let trimmed = cache.content.trim();
+        if !trimmed.is_empty()
+            && trimmed != "0"
+            && !trimmed.eq_ignore_ascii_case("null")
+        {
             return Ok(cache.content);
         }
     }

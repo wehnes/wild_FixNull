@@ -19,6 +19,8 @@ use tokio::sync::RwLock;
 
 const DEFAULT_API_HOST: &str = "https://www.wenku8.net";
 const APP_HOST: &str = "http://app.wenku8.com";
+const WENKU8_RELAY: &str = "https://wenku8-relay.mewx.org/";
+const WENKU8_RELAY_APP_VER: &str = "1.13";
 
 pub struct Wenku8Client {
     pub client: Client,
@@ -978,7 +980,12 @@ impl Wenku8Client {
         Self::parse_reader(text.as_str())
     }
 
-    pub async fn c_content(&self, aid: &str, cid: &str) -> Result<String> {
+    fn invalid_chapter_content(content: &str) -> bool {
+        let content = content.trim();
+        content.is_empty() || content == "0" || content.eq_ignore_ascii_case("null")
+    }
+
+    async fn c_content_from_web(&self, aid: &str, cid: &str) -> Result<String> {
         let aid_num: u64 = aid.parse().unwrap_or(0);
         let sub_dir = aid_num / 1000;
         let url = format!(
@@ -1013,6 +1020,61 @@ impl Wenku8Client {
         let mut result = String::new();
         Self::extract_content_text(content, &mut result);
         Ok(result.trim().to_string())
+    }
+
+    async fn c_content_from_relay(&self, aid: &str, cid: &str) -> Result<String> {
+        let raw_request = format!("action=book&do=text&aid={aid}&cid={cid}&t=0");
+        let params = [
+            (
+                "request",
+                base64::prelude::BASE64_STANDARD.encode(raw_request.as_bytes()),
+            ),
+            ("appver", WENKU8_RELAY_APP_VER.to_string()),
+            (
+                "timetoken",
+                chrono::Utc::now().timestamp().to_string(),
+            ),
+        ];
+
+        let response = self
+            .client
+            .post(WENKU8_RELAY)
+            // Wild's default UA is already Dalvik. Keeping it here also makes the
+            // relay request look like the old Wenku8 Android client.
+            .header(USER_AGENT, self.load_user_agent().await)
+            .form(&params)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "Wenku8 relay returned HTTP {}",
+                response.status()
+            ));
+        }
+
+        let content = response.text().await?;
+        if Self::invalid_chapter_content(&content) {
+            return Err(anyhow!("Wenku8 relay returned empty chapter content"));
+        }
+
+        Ok(content.trim().to_string())
+    }
+
+    pub async fn c_content(&self, aid: &str, cid: &str) -> Result<String> {
+        match self.c_content_from_web(aid, cid).await {
+            Ok(content) if !Self::invalid_chapter_content(&content) => Ok(content),
+            Ok(_) => self
+                .c_content_from_relay(aid, cid)
+                .await
+                .context("chapter page returned restricted/empty content; relay fallback failed"),
+            Err(web_error) => match self.c_content_from_relay(aid, cid).await {
+                Ok(content) => Ok(content),
+                Err(relay_error) => Err(anyhow!(
+                    "chapter web request failed: {web_error:#}; relay fallback failed: {relay_error:#}"
+                )),
+            },
+        }
     }
 
     fn extract_content_text(element: ElementRef, buf: &mut String) {

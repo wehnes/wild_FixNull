@@ -107,11 +107,7 @@ pub(crate) async fn get_chapter_content(aid: &str, cid: &str) -> anyhow::Result<
             let novel_dir = Path::new(DOWNLOAD_FOLDER.get().unwrap()).join(&a.aid);
             let chapter_file_path = novel_dir.join(format!("chapter_{}", cid));
             let content = tokio::fs::read_to_string(chapter_file_path).await?;
-            let trimmed = content.trim();
-            if !trimmed.is_empty()
-                && trimmed != "0"
-                && !trimmed.eq_ignore_ascii_case("null")
-            {
+            if !crate::wenku8::Wenku8Client::invalid_chapter_content(&content) {
                 return Ok(content);
             }
         }
@@ -119,11 +115,7 @@ pub(crate) async fn get_chapter_content(aid: &str, cid: &str) -> anyhow::Result<
 
     // 先尝试从缓存获取（跳过无效的缓存内容）
     if let Some(cache) = chapter_cache::Entity::get_chapter_content(aid, cid).await? {
-        let trimmed = cache.content.trim();
-        if !trimmed.is_empty()
-            && trimmed != "0"
-            && !trimmed.eq_ignore_ascii_case("null")
-        {
+        if !crate::wenku8::Wenku8Client::invalid_chapter_content(&cache.content) {
             return Ok(cache.content);
         }
     }

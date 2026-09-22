@@ -980,9 +980,16 @@ impl Wenku8Client {
         Self::parse_reader(text.as_str())
     }
 
-    fn invalid_chapter_content(content: &str) -> bool {
+    pub(crate) fn invalid_chapter_content(content: &str) -> bool {
         let content = content.trim();
-        content.is_empty() || content == "0" || content.eq_ignore_ascii_case("null")
+        let lower = content.to_ascii_lowercase();
+        content.is_empty()
+            || content == "0"
+            || content.eq_ignore_ascii_case("null")
+            || lower.starts_with("<!doctype html")
+            || lower.starts_with("<html")
+            || lower.starts_with("<head")
+            || lower.starts_with("<body")
     }
 
     async fn c_content_from_web(&self, aid: &str, cid: &str) -> Result<String> {
@@ -999,7 +1006,7 @@ impl Wenku8Client {
         let headers = Self::default_headers_sync(&ua);
         let response = self
             .client
-            .get(url)
+            .get(&url)
             .headers(headers)
             .send()
             .await?;
@@ -1009,7 +1016,18 @@ impl Wenku8Client {
         let bytes = response.bytes().await?;
         let html = decode_gbk(bytes)?;
 
-        let document = Html::parse_document(&html);
+        Self::parse_chapter_page(&html, &url)
+    }
+
+    fn parse_chapter_page(html: &str, page_url: &str) -> Result<String> {
+        let document = Html::parse_document(html);
+        // Same restricted-page check as script.txt (轻小说文库+ 2.31.2).
+        let first_child = Selector::parse("#contentmain > :first-child").unwrap();
+        if document.select(&first_child).next().is_some_and(|element| {
+            element.text().collect::<String>().trim().eq_ignore_ascii_case("null")
+        }) {
+            return Err(anyhow!("Chapter page contains the null placeholder"));
+        }
         let content_selector = Selector::parse("#content").unwrap();
         let content = document
             .select(&content_selector)
@@ -1018,7 +1036,7 @@ impl Wenku8Client {
 
         // Build plain text: skip <ul> watermark, convert <br> to newline
         let mut result = String::new();
-        Self::extract_content_text(content, &mut result);
+        Self::extract_content_text(content, &mut result, page_url);
         Ok(result.trim().to_string())
     }
 
@@ -1032,16 +1050,15 @@ impl Wenku8Client {
             ("appver", WENKU8_RELAY_APP_VER.to_string()),
             (
                 "timetoken",
-                chrono::Utc::now().timestamp().to_string(),
+                chrono::Utc::now().timestamp_millis().to_string(),
             ),
         ];
 
         let response = self
             .client
             .post(WENKU8_RELAY)
-            // Wild's default UA is already Dalvik. Keeping it here also makes the
-            // relay request look like the old Wenku8 Android client.
-            .header(USER_AGENT, self.load_user_agent().await)
+            .header(USER_AGENT, "Dalvik/2.1.0 (Linux; U; Android 7.1.2; unknown Build/NZH54D)")
+            .timeout(std::time::Duration::from_secs(30))
             .form(&params)
             .send()
             .await?;
@@ -1077,7 +1094,7 @@ impl Wenku8Client {
         }
     }
 
-    fn extract_content_text(element: ElementRef, buf: &mut String) {
+    fn extract_content_text(element: ElementRef, buf: &mut String, page_url: &str) {
         use scraper::Node;
         for child in element.children() {
             match child.value() {
@@ -1087,7 +1104,7 @@ impl Wenku8Client {
                 }
                 Node::Element(e) => {
                     let name = e.name();
-                    if name == "ul" {
+                    if matches!(name, "ul" | "script" | "style") {
                         // skip watermark block
                         continue;
                     }
@@ -1095,8 +1112,18 @@ impl Wenku8Client {
                         buf.push('\n');
                         continue;
                     }
+                    if name == "img" {
+                        if let Some(src) = e.attr("src") {
+                            if let Ok(url) = url::Url::parse(page_url).and_then(|base| base.join(src)) {
+                                if matches!(url.scheme(), "http" | "https") {
+                                    buf.push_str(&format!("\n<!--image-->{url}<!--image-->\n"));
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     let child_ref = ElementRef::wrap(child).unwrap();
-                    Self::extract_content_text(child_ref, buf);
+                    Self::extract_content_text(child_ref, buf, page_url);
                 }
                 _ => {}
             }
@@ -1638,4 +1665,37 @@ fn gbk_url_encode(text: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod chapter_fallback_tests {
+    use super::Wenku8Client;
+
+    #[test]
+    fn detects_script_null_marker_even_with_other_content() {
+        let html = r#"<div id="contentmain"><div> null </div><div id="content">提示文字</div></div>"#;
+        assert!(Wenku8Client::parse_chapter_page(html, "https://www.wenku8.net/novel/1/1234/5.htm").is_err());
+    }
+
+    #[test]
+    fn preserves_text_and_relative_illustrations() {
+        let html = r#"<div id="content">第一段<br>第二段<img src="pic.jpg"><ul>水印</ul><script>广告</script></div>"#;
+        let content = Wenku8Client::parse_chapter_page(html, "https://www.wenku8.net/novel/1/1234/5.htm").unwrap();
+        assert_eq!(content, "第一段\n第二段\n<!--image-->https://www.wenku8.net/novel/1/1234/pic.jpg<!--image-->");
+    }
+
+    #[test]
+    fn rejects_placeholders_and_html_errors_but_keeps_novel_text() {
+        for content in ["", " \n", "0", " NULL ", "<!DOCTYPE html><html>error</html>", "<html>error</html>"] {
+            assert!(Wenku8Client::invalid_chapter_content(content));
+        }
+        for content in ["正文中的 null 不应被替换", "<!--image-->https://example.com/a.jpg<!--image-->", "第一段\n第二段"] {
+            assert!(!Wenku8Client::invalid_chapter_content(content));
+        }
+    }
+
+    #[test]
+    fn missing_content_is_an_error() {
+        assert!(Wenku8Client::parse_chapter_page("<html>error</html>", "https://www.wenku8.net/").is_err());
+    }
 }

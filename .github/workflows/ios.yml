@@ -1,0 +1,71 @@
+name: Build iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ios.yml'
+      - 'rust/**'
+      - 'rust_builder/**'
+      - 'lib/**'
+      - 'ios/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Check relay formatting
+        run: rustfmt --check rust/src/wenku8/relay.rs
+
+      - name: Test relay signing and chapter parsing
+        run: |
+          cargo test --locked --manifest-path rust/Cargo.toml relay::tests
+          cargo test --locked --manifest-path rust/Cargo.toml chapter_fallback_tests
+
+      - name: Verify real chapter retrieval
+        run: cargo test --locked --manifest-path rust/Cargo.toml relay_returns_requested_chapters -- --ignored
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.3'
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build unsigned iOS app
+        run: flutter build ios --release --no-codesign
+
+      - name: Package IPA
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^version: *\([^+]*\).*/\1/p' pubspec.yaml)
+          mkdir -p build/ios/ipa/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
+          cd build/ios/ipa
+          zip -qry "wild-${VERSION}-ios-nosign.ipa" Payload
+          echo "IPA_PATH=build/ios/ipa/wild-${VERSION}-ios-nosign.ipa" >> "$GITHUB_ENV"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: wild-ios-nosign
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+          retention-days: 14

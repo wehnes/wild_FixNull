@@ -20,7 +20,6 @@ use tokio::sync::RwLock;
 const DEFAULT_API_HOST: &str = "https://www.wenku8.net";
 const APP_HOST: &str = "http://app.wenku8.com";
 const WENKU8_RELAY: &str = "https://wenku8-relay.mewx.org/";
-const WENKU8_RELAY_APP_VER: &str = "1.13";
 
 pub struct Wenku8Client {
     pub client: Client,
@@ -1041,18 +1040,11 @@ impl Wenku8Client {
     }
 
     async fn c_content_from_relay(&self, aid: &str, cid: &str) -> Result<String> {
-        let raw_request = format!("action=book&do=text&aid={aid}&cid={cid}&t=0");
-        let params = [
-            (
-                "request",
-                base64::prelude::BASE64_STANDARD.encode(raw_request.as_bytes()),
-            ),
-            ("appver", WENKU8_RELAY_APP_VER.to_string()),
-            (
-                "timetoken",
-                chrono::Utc::now().timestamp_millis().to_string(),
-            ),
-        ];
+        let params = super::relay::chapter_request_params(
+            aid,
+            cid,
+            chrono::Utc::now().timestamp_millis(),
+        );
 
         let response = self
             .client
@@ -1063,14 +1055,12 @@ impl Wenku8Client {
             .send()
             .await?;
 
-        if !response.status().is_success() {
-            return Err(anyhow!(
-                "Wenku8 relay returned HTTP {}",
-                response.status()
-            ));
-        }
-
+        let status = response.status();
         let content = response.text().await?;
+        if !status.is_success() {
+            let detail: String = content.chars().take(200).collect();
+            return Err(anyhow!("Wenku8 relay returned HTTP {status}: {detail}"));
+        }
         if Self::invalid_chapter_content(&content) {
             return Err(anyhow!("Wenku8 relay returned empty chapter content"));
         }
@@ -1692,6 +1682,25 @@ mod chapter_fallback_tests {
         for content in ["正文中的 null 不应被替换", "<!--image-->https://example.com/a.jpg<!--image-->", "第一段\n第二段"] {
             assert!(!Wenku8Client::invalid_chapter_content(content));
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires live Wenku8 relay access"]
+    async fn relay_returns_requested_chapters() {
+        let client = Wenku8Client {
+            client: reqwest::Client::new(),
+            user_agent: tokio::sync::RwLock::new(String::new()),
+            api_host: tokio::sync::RwLock::new(String::new()),
+        };
+        let text = client.c_content_from_relay("1587", "180393").await.unwrap();
+        assert!(text.contains("虎穴特典 出发！强化型札诺巴"));
+        assert!(text.chars().count() > 1_000);
+        assert!(!text.contains('\u{fffd}'));
+
+        let illustrations = client.c_content_from_relay("1861", "179068").await.unwrap();
+        assert!(illustrations.contains("插图"));
+        assert!(illustrations.matches("<!--image-->").count() >= 2);
+        assert!(!illustrations.contains('\u{fffd}'));
     }
 
     #[test]

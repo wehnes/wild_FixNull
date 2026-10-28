@@ -1,11 +1,29 @@
 # 章节空正文回退
 
-依据用户提供的 script.txt（轻小说文库+ 2.31.2，作者 PY-DNG，GPL-3.0-or-later）核对并补齐 Rust 数据层实现。脚本主页：https://greasyfork.org/scripts/539514 。未嵌入其界面、账号管理等无关模块。
+网页正文有效时使用网页；正文为空、0、null、#contentmain 首元素为 null，或网页获取失败时，通过 MewX HTTPS 中转获取正文。阅读和离线下载共用这一流程。
 
-网页正文有效时使用网页；#contentmain 首元素为 null、正文为空/0/null，或网页获取失败时，使用脚本相同的 HTTPS 中转服务 https://wenku8-relay.mewx.org/ 获取旧 Android API 内容。
-请求为 POST 表单：appver=1.13、Base64(action=book&do=text&aid=书籍ID&cid=章节ID&t=0)、毫秒 timetoken、Dalvik User-Agent。t=0 延续客户端的简体中文设置。中转请求超时为 30 秒，失败时返回错误，不把空正文或 HTML 错误页缓存为小说。
+## 0.0.16 修复
 
-原有 c_content 调用链同时服务阅读和离线下载；本次统一缓存有效性判断，并保留网页图片为客户端已有的 <!--image--> 标记，支持相对图片链接。
+原有固定 appver=1.13 会被当前中转拒绝，返回 HTTP 400 Bad request。现改用官方 Android v1.30 发布包中 getMagicVersionCpp 的兼容实现：按 UTC 分钟窗口动态生成版本校验参数。appver 和毫秒 timetoken 使用同一次时钟采样，不可把一次生成的参数长期写死。
 
-验证：新增 chapter_fallback_tests，覆盖 null 标记与提示文字共存、文本和相对插图、无效响应、缺失正文。运行命令（rust 目录）：cargo test chapter_fallback_tests。
-本机未找到 Cargo/Rust/Flutter SDK，.fvm 中的 SDK 项为文本文件，因此此次仅进行了源代码差异与调用链静态检查，未执行测试、构建安装包或验证线上中转服务。
+接口仍为 https://wenku8-relay.mewx.org/ 。POST 表单包含动态 appver、Base64(action=book&do=text&aid=书籍ID&cid=章节ID&t=0)、毫秒 timetoken；沿用 Dalvik User-Agent、标准表单编码、30 秒超时。HTTP 错误现在包含最多 200 个字符的服务端响应，便于诊断。
+
+正文按 UTF-8 读取，并保留已有的 <!--image-->图片链接<!--image--> 标记。空正文和 HTML 错误页不会作为正常章节缓存。
+
+## 验证
+
+2026-10-28，独立请求已验证：1587/180393 返回小说正文（5673 字节）；1861/179068 返回插图章（18 个图片链接）。普通 appver=1.30 在同一请求脚本中返回 400；动态参数配合标准表单编码返回 200。
+
+Rust 回归测试：
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml relay::tests
+cargo test --locked --manifest-path rust/Cargo.toml chapter_fallback_tests
+cargo test --locked --manifest-path rust/Cargo.toml relay_returns_requested_chapters -- --ignored
+```
+
+最后一项需要联网，调用客户端实际使用的 Rust 中转方法验证这两个章节。Build iOS 工作流先运行上述验证，再构建未签名 IPA；产物需要签名后安装到普通 iPhone。
+
+## 来源
+
+网页回退设计参考用户提供的轻小说文库+ 2.31.2（PY-DNG，GPL-3.0-or-later）：https://greasyfork.org/scripts/539514 。版本兼容逻辑依据官方 v1.30 发布包静态核对：https://github.com/MewX/light-novel-library_Wenku8_Android/releases/tag/v1.30 。APK SHA-256：4bea980a9426d43db9a91ce3a4206c7b5adf311a7f97f7dd6bbfc0f9be0b7400。

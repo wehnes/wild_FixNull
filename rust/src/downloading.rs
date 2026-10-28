@@ -511,7 +511,7 @@ async fn try_import_volume_txt(
 mod packtxt_import_tests {
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     #[ignore = "requires live whole-volume TXT endpoint and temporary SQLite databases"]
     async fn volume_txt_imports_only_selected_pending_text() -> Result<()> {
         let root = std::env::temp_dir().join(format!(

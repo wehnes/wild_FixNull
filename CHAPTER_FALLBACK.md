@@ -27,3 +27,9 @@ cargo test --locked --manifest-path rust/Cargo.toml relay_returns_requested_chap
 ## 来源
 
 网页回退设计参考用户提供的轻小说文库+ 2.31.2（PY-DNG，GPL-3.0-or-later）：https://greasyfork.org/scripts/539514 。版本兼容逻辑依据官方 v1.30 发布包静态核对：https://github.com/MewX/light-novel-library_Wenku8_Android/releases/tag/v1.30 。APK SHA-256：4bea980a9426d43db9a91ce3a4206c7b5adf311a7f97f7dd6bbfc0f9be0b7400。
+
+## 0.0.17 整卷 TXT
+
+小说详情和章节下载页的每卷标题旁新增 TXT 按钮，可下载后通过系统分享面板保存到文件或分享。导出为 UTF-8；请求使用 GBK 参数，并识别 UTF-8、GBK、带 BOM 的 UTF-16LE/BE 实际响应。
+
+离线下载先尝试 https://dl.wenku8.com/packtxt.php?aid=小说ID&vid=该卷真实首章ID减1&charset=gbk ，按完整目录标题保守拆章，仅保存用户已选择且未完成的章节。标题缺失、重复、乱序、空正文、接口错误时回到逐章下载；插图章仍走原章节/图片流程。已完成章节不会被覆盖，未选择章节不会被加入离线阅读。

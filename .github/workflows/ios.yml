@@ -9,6 +9,7 @@ on:
       - 'rust/**'
       - 'rust_builder/**'
       - 'lib/**'
+      - 'test/**'
       - 'ios/**'
       - 'pubspec.yaml'
       - 'pubspec.lock'
@@ -35,9 +36,12 @@ jobs:
         run: |
           cargo test --locked --manifest-path rust/Cargo.toml relay::tests
           cargo test --locked --manifest-path rust/Cargo.toml chapter_fallback_tests
+          cargo test --locked --manifest-path rust/Cargo.toml packtxt::tests
 
       - name: Verify real chapter retrieval
-        run: cargo test --locked --manifest-path rust/Cargo.toml relay_returns_requested_chapters -- --ignored
+        run: |
+          cargo test --locked --manifest-path rust/Cargo.toml relay_returns_requested_chapters -- --ignored
+          cargo test --locked --manifest-path rust/Cargo.toml volume_txt_ -- --ignored
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -48,6 +52,16 @@ jobs:
 
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Test whole-volume TXT download and sharing UI
+        run: flutter test test/volume_txt_test.dart test/volume_txt_button_test.dart
+
+      - name: Upload resolved dependency lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolved-pubspec-lock
+          path: pubspec.lock
+          retention-days: 14
 
       - name: Build unsigned iOS app
         run: flutter build ios --release --no-codesign

@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wild/src/rust/api/wenku8.dart' as w8;
 import 'package:wild/src/rust/frb_generated.dart';
 import 'package:wild/widgets/cached_image.dart';
+import 'package:wild/widgets/volume_txt_button.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:wild/cubits/api_host_cubit.dart';
 import 'package:wild/pages/home/bookshelf_cubit.dart';
@@ -293,6 +294,8 @@ class _NovelInfoContent extends StatelessWidget {
           delegate: SliverChildBuilderDelegate((context, index) {
             final volume = volumes[index];
             return _VolumeItem(
+              novelId: novelId,
+              novelTitle: novelInfo.title,
               volume: volume,
               onChapterTap:
                   (chapter) => _navigateToReader(
@@ -493,10 +496,12 @@ class _NovelTags extends StatelessWidget {
 }
 
 class _VolumeItem extends StatelessWidget {
+  final String novelId;
+  final String novelTitle;
   final Volume volume;
   final Function(Chapter) onChapterTap;
 
-  const _VolumeItem({required this.volume, required this.onChapterTap});
+  const _VolumeItem({required this.novelId, required this.novelTitle, required this.volume, required this.onChapterTap});
 
   @override
   Widget build(BuildContext context) {
@@ -507,12 +512,13 @@ class _VolumeItem extends StatelessWidget {
         children: [
           Padding(
             padding: const EdgeInsets.all(16),
-            child: Text(
-              volume.title,
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-            ),
+            child: Row(children: [
+              Expanded(child: Text(
+                volume.title,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+              )),
+              VolumeTxtButton(novelId: novelId, novelTitle: novelTitle, volume: volume),
+            ]),
           ),
           const Divider(height: 1),
           ...volume.chapters.map((chapter) {

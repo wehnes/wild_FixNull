@@ -7,6 +7,7 @@ use crate::{
 use once_cell::sync::Lazy;
 use sea_orm::{EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use std::path::Path;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::spawn;
@@ -91,6 +92,12 @@ async fn downloading_loop() -> Result<()> {
                 "Processing novel"
             );
             let novel_dir = Path::new(DOWNLOAD_FOLDER.get().unwrap()).join(&novel.novel_id);
+            // Reuse the catalog cached when the user chose chapters. A selected
+            // subset must never be mistaken for the first chapter of a volume.
+            let volume_catalog = crate::api::wenku8::novel_reader(novel.novel_id.clone())
+                .await
+                .unwrap_or_default();
+            let mut txt_attempted = HashSet::new();
 
             if novel.cover_download_status == 0 {
                 match CLIENT.download_image(&novel.cover_url).await {
@@ -154,6 +161,20 @@ async fn downloading_loop() -> Result<()> {
                 if need_restart().await {
                     warn!(volume_id = %volume.id, "Download interrupted");
                     break;
+                }
+
+                if txt_attempted.insert(volume.id.clone()) {
+                    if let Some(catalog_volume) = volume_catalog.iter().find(|v| v.id == volume.id) {
+                        match try_import_volume_txt(&novel.novel_id, catalog_volume, &novel_dir).await {
+                            Ok(count) if count > 0 => {
+                                info!(volume_id = %volume.id, chapters = count, "Imported whole-volume TXT");
+                            }
+                            Err(error) => {
+                                warn!(volume_id = %volume.id, error = %error, "Volume TXT unavailable; using chapter downloads");
+                            }
+                            _ => {}
+                        }
+                    }
                 }
 
                 if let Some(chapter) = novel_download_chapter::Entity::find_incomplete_by_volume(
@@ -441,5 +462,86 @@ async fn downloading_loop() -> Result<()> {
         }
 
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
+}
+
+/// Persist only selected, pending text chapters. Missing text and illustrations
+/// remain pending for the existing chapter/image downloader.
+async fn try_import_volume_txt(
+    novel_id: &str,
+    volume: &crate::wenku8::Volume,
+    novel_dir: &Path,
+) -> Result<usize> {
+    let pending: Vec<_> = novel_download_chapter::Entity::find_by_volume_id(&volume.id)
+        .await?
+        .into_iter()
+        .filter(|chapter| chapter.aid == novel_id && chapter.download_status == 0)
+        .collect();
+    if !pending.iter().any(|chapter| !chapter.title.contains("插图")) {
+        return Ok(0);
+    }
+    let first = volume.chapters.first().ok_or_else(|| anyhow::anyhow!("Empty volume"))?;
+    let text = CLIENT.volume_txt(novel_id, &first.cid).await?;
+    let chapters = crate::wenku8::packtxt::split_volume_txt(&text, volume)?;
+    tokio::fs::create_dir_all(novel_dir).await?;
+    let mut imported = 0;
+    for chapter in pending {
+        if need_restart().await {
+            break;
+        }
+        if let Some(content) = chapters.get(&chapter.id) {
+            let path = novel_dir.join(format!("chapter_{}", chapter.id));
+            tokio::fs::write(path, content).await?;
+            novel_download_chapter::Entity::update_status(novel_id, &volume.id, &chapter.id, 1).await?;
+            imported += 1;
+        }
+    }
+    if imported > 0 {
+        let completed = novel_download_chapter::Entity::find_by_novel_id(novel_id)
+            .await?
+            .iter()
+            .filter(|chapter| chapter.download_status == 1)
+            .count();
+        novel_download::Entity::update_download_chapter_count(novel_id, i32::try_from(completed)?).await?;
+    }
+    Ok(imported)
+}
+
+#[cfg(test)]
+mod packtxt_import_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires live whole-volume TXT endpoint and temporary SQLite databases"]
+    async fn volume_txt_imports_only_selected_pending_text() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "wild-packtxt-{}-{}", std::process::id(), chrono::Utc::now().timestamp_millis()
+        ));
+        crate::database::init_database(root.to_str().unwrap()).await?;
+        let volume = crate::wenku8::packtxt::tests::real_volume();
+        novel_download::Entity::upsert(
+            "1861", "TXT integration test", 0, "", 1, "", "", 3, 1, "", "", false, "", ""
+        ).await?;
+        for (id, status) in [("65281", 0), ("65282", 1), ("65640", 0)] {
+            let (index, chapter) = volume.chapters.iter().enumerate().find(|(_, c)| c.cid == id).unwrap();
+            novel_download_chapter::Entity::upsert(
+                id, &chapter.title, "", "1861", &volume.id, status, 0, index as i32
+            ).await?;
+        }
+        let dir = root.join("novel");
+        tokio::fs::create_dir_all(&dir).await?;
+        tokio::fs::write(dir.join("chapter_65282"), "existing complete chapter").await?;
+        assert_eq!(try_import_volume_txt("1861", &volume, &dir).await?, 1);
+        assert!(tokio::fs::read_to_string(dir.join("chapter_65281")).await?.chars().count() > 500);
+        assert_eq!(tokio::fs::read_to_string(dir.join("chapter_65282")).await?, "existing complete chapter");
+        assert!(!dir.join("chapter_65283").exists());
+        assert!(!dir.join("chapter_65640").exists());
+        assert_eq!(novel_download_chapter::Entity::find_by_id("65281").await?.unwrap().download_status, 1);
+        assert_eq!(novel_download_chapter::Entity::find_by_id("65640").await?.unwrap().download_status, 0);
+        assert_eq!(novel_download::Entity::find_by_novel_id("1861").await?.unwrap().download_chapter_count, 2);
+        // A repeated import must not overwrite complete files or count them twice.
+        assert_eq!(try_import_volume_txt("1861", &volume, &dir).await?, 0);
+        let _ = tokio::fs::remove_dir_all(root).await;
+        Ok(())
     }
 }

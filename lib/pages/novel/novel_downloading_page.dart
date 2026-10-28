@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:wild/widgets/volume_txt_button.dart';
 import 'package:wild/src/rust/api/wenku8.dart' as w8;
 import 'package:wild/src/rust/wenku8/models.dart';
 import 'package:wild/widgets/cached_image.dart';
@@ -113,6 +114,10 @@ class _NovelDownloadingPageState extends State<NovelDownloadingPage> {
       ),
       body: Column(
         children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Text('勾选章节供离线阅读；每卷右侧的 TXT 按钮可保存或分享整卷文本（不含插图）。'),
+          ),
           // 小说信息卡片
           Card(
             margin: const EdgeInsets.all(16),
@@ -176,12 +181,13 @@ class _NovelDownloadingPageState extends State<NovelDownloadingPage> {
                     children: [
                       Padding(
                         padding: const EdgeInsets.all(16),
-                        child: Text(
-                          volume.title,
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
+                        child: Row(children: [
+                          Expanded(child: Text(
+                            volume.title,
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                          )),
+                          VolumeTxtButton(novelId: widget.novelId, novelTitle: widget.novelInfo.title, volume: volume),
+                        ]),
                       ),
                       const Divider(height: 1),
                       ...volume.chapters.map((chapter) {

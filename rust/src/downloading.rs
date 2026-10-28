@@ -482,7 +482,21 @@ async fn try_import_volume_txt(
     }
     let first = volume.chapters.first().ok_or_else(|| anyhow::anyhow!("Empty volume"))?;
     let text = CLIENT.volume_txt(novel_id, &first.cid).await?;
-    let chapters = crate::wenku8::packtxt::split_volume_txt(&text, volume)?;
+    persist_volume_txt(novel_id, volume, novel_dir, &text).await
+}
+
+async fn persist_volume_txt(
+    novel_id: &str,
+    volume: &crate::wenku8::Volume,
+    novel_dir: &Path,
+    text: &str,
+) -> Result<usize> {
+    let pending: Vec<_> = novel_download_chapter::Entity::find_by_volume_id(&volume.id)
+        .await?
+        .into_iter()
+        .filter(|chapter| chapter.aid == novel_id && chapter.download_status == 0)
+        .collect();
+    let chapters = crate::wenku8::packtxt::split_volume_txt(text, volume)?;
     tokio::fs::create_dir_all(novel_dir).await?;
     let mut imported = 0;
     for chapter in pending {
@@ -512,13 +526,20 @@ mod packtxt_import_tests {
     use super::*;
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "requires live whole-volume TXT endpoint and temporary SQLite databases"]
     async fn volume_txt_imports_only_selected_pending_text() -> Result<()> {
         let root = std::env::temp_dir().join(format!(
             "wild-packtxt-{}-{}", std::process::id(), chrono::Utc::now().timestamp_millis()
         ));
         crate::database::init_database(root.to_str().unwrap()).await?;
         let volume = crate::wenku8::packtxt::tests::real_volume();
+        let mut text = String::new();
+        for chapter in &volume.chapters {
+            text.push_str(&format!("{} {}\n", volume.title, chapter.title));
+            if !chapter.title.contains("插图") {
+                text.push_str(&"离线测试正文。".repeat(150));
+                text.push('\n');
+            }
+        }
         novel_download::Entity::upsert(
             "1861", "TXT integration test", 0, "", 1, "", "", 3, 1, "", "", false, "", ""
         ).await?;
@@ -531,7 +552,7 @@ mod packtxt_import_tests {
         let dir = root.join("novel");
         tokio::fs::create_dir_all(&dir).await?;
         tokio::fs::write(dir.join("chapter_65282"), "existing complete chapter").await?;
-        assert_eq!(try_import_volume_txt("1861", &volume, &dir).await?, 1);
+        assert_eq!(persist_volume_txt("1861", &volume, &dir, &text).await?, 1);
         assert!(tokio::fs::read_to_string(dir.join("chapter_65281")).await?.chars().count() > 500);
         assert_eq!(tokio::fs::read_to_string(dir.join("chapter_65282")).await?, "existing complete chapter");
         assert!(!dir.join("chapter_65283").exists());
@@ -540,7 +561,7 @@ mod packtxt_import_tests {
         assert_eq!(novel_download_chapter::Entity::find_by_id("65640").await?.unwrap().download_status, 0);
         assert_eq!(novel_download::Entity::find_by_novel_id("1861").await?.unwrap().download_chapter_count, 2);
         // A repeated import must not overwrite complete files or count them twice.
-        assert_eq!(try_import_volume_txt("1861", &volume, &dir).await?, 0);
+        assert_eq!(persist_volume_txt("1861", &volume, &dir, &text).await?, 0);
         let _ = tokio::fs::remove_dir_all(root).await;
         Ok(())
     }

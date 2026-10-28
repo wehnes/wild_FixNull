@@ -128,7 +128,9 @@ impl Wenku8Client {
             .send()
             .await?;
         if !response.status().is_success() {
-            bail!("Volume TXT returned HTTP {}", response.status());
+            let status = response.status();
+            let detail: String = response.text().await?.chars().take(200).collect();
+            bail!("Volume TXT returned HTTP {status}: {detail}");
         }
         if response.content_length().is_some_and(|size| size > MAX_TXT_BYTES as u64) {
             bail!("Volume TXT exceeds 16 MB");
